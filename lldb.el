@@ -17,6 +17,7 @@
 ;; TODO lldb improvements
 ;; show std::string more focused if no formatter is available
 ;; unique ptr - call get() to see the pointer value
+;; readme with screencasts
 
 (require 'loop)
 (require 'infix)
@@ -42,6 +43,32 @@
     )
   )
 
+(defun lldb-get-buffer-process ()
+  (let ((res))
+    (setq res (get-buffer-process "*lldb*"))
+    (if (null res)
+	(setq res (get-buffer-process "*lldb.exe*"))
+      )
+    (if (null res)
+	(debug "lldb buffer for process not found")
+	)
+    res
+    )
+  )
+
+(defun lldb-get-buffer ()
+  (let ((res))
+    (setq res (get-buffer "*lldb*"))
+    (if (null res)
+	(setq res (get-buffer "*lldb.exe*"))
+	)
+    (if (null res)
+	(debug "lldb buffer not found")
+	)
+    res
+    )
+  )
+
 (defun lldb-backtrace-find-file ()
   "switch frame pointer and open file in other window for backtrace entry at current point"
   (interactive)
@@ -51,7 +78,7 @@
           (let ((no))
             (setq no (match-string 1))
             ;; set frame variable via "f <frame number>"
-            (setq proc (get-buffer-process "*lldb*"))
+            (setq proc (lldb-get-buffer-process))
             (lldb-run-thing-process proc (concat "f " no "\n") t)
    ;;         (lldb-run-thing-process proc "bt\n" nil)
             )
@@ -64,7 +91,7 @@
   "hook to track current stack entry"
   (if (stringp arg)
       (progn
-        (if (string-match "frame.* at \\([^:]*\\):\\([0-9]*\\)" arg)
+        (if (string-match "frame.* at \\(.*\\):\\([0-9]*\\)" arg)
             (progn
               ;; file name
               (let ((fn) (li) (buf))
@@ -139,7 +166,7 @@
       (setq word (concat "fr v -o " (string-join symbols " ") "\n"))
       )
     (remove-hook 'comint-output-filter-functions 'lldb-callback t) ;; disable hook
-    (setq proc (get-buffer-process "*lldb*"))
+    (setq proc (lldb-get-buffer-process))
     ;; "fr v" also shows uninitialized which i don't like
     ;;(setq str (lldb-run-thing-process proc "fr v\n" t))
     (setq str (lldb-run-thing-process proc word t))
@@ -228,18 +255,49 @@
   (comint-send-string nil "c\n")
   )
 
+(defun lldb-string-starts-with (str sub)
+  (let ((res))
+    (setq res (string-match sub str))
+    (if res
+	(if (= res 0)
+	    t
+	  ;;else
+	  nil
+	  )
+      ;;else
+      nil
+      )
+    )
+  )
+
 (defun lldb-run-thing-process (process command kill-result)
   "Send COMMAND to PROCESS"
-  (let ((result) (last-chars) (start))
-    (with-current-buffer (get-buffer "*lldb*")
+  (let ((result) (last-chars) (start) (sub))
+    (with-current-buffer (lldb-get-buffer)
       ;; do not delete complete buffer - do delete only the result
       ;;(erase-buffer)
       (end-of-buffer)
       (setq start (point))
       (comint-send-string process command)
+      (if lldb-is-win ;; windows workaround - how to find (lldb) end marker?
+	  (comint-send-string process "$\n")
+	  )
       ;; wait until result is available
       (loop-while t
-        (accept-process-output process)
+        (accept-process-output process 1)
+	(if lldb-is-win
+	    (progn
+	      (goto-char start)
+	      ;; Skip past the command, if it was echoed; ; on windows we need to skip the command input
+	      (setq sub (buffer-substring-no-properties start (+ start (length command) (length "(lldb) "))))
+	      (if (string-equal sub (concat "(lldb) " command))
+		  (progn
+		    (forward-line)
+		    (setq start (point))
+		    )
+		)
+	      )
+	  )
         (if (< (point-max) 7)
             (loop-continue)
           )
@@ -247,6 +305,15 @@
         (if (string-equal last-chars "(lldb)")
             (loop-break)
           )
+	;; windows workaround - lldb does not print marker in case of error
+	(if (string-equal last-chars "mmand.")
+	    (progn
+	      (end-of-buffer)
+	      (backward-char)
+	      (kill-whole-line)
+	      (loop-break)
+	      )
+	    )
         )
       (setq result (buffer-substring-no-properties start (- (point-max) 1)))
       ;;(debug result)
@@ -261,7 +328,7 @@
 (defun lldb-backtrace ()
   (interactive)
   (remove-hook 'comint-output-filter-functions 'lldb-callback t) ;; disable hook
-  (setq proc (get-buffer-process "*lldb*"))
+  (setq proc (lldb-get-buffer-process))
   (if proc
       (lldb-run-thing-process proc "bt\n" nil)
     )
@@ -340,7 +407,7 @@
                       )
                     )
                 )
-              (if (string-starts-with str "\\$") ;; starts with dollar character
+              (if (lldb-string-starts-with str "\\$") ;; starts with dollar character
                   (progn
                     (loop-break)
                     )
@@ -364,7 +431,7 @@
           (end-of-line)
           (setq prefix (lldb-current-prefix-with-asterisk))
           (end-of-line)      
-          (setq proc (get-buffer-process "*lldb*"))
+          (setq proc (lldb-get-buffer-process))
           (remove-hook 'comint-output-filter-functions 'lldb-callback t) ;; disable hook
           (setq str (lldb-run-thing-process proc (concat "expr -T -- " path "\n") t))
           (add-hook 'comint-output-filter-functions 'lldb-callback) ;; and enable again
@@ -396,10 +463,10 @@
           (end-of-line)
           (setq prefix (lldb-current-prefix-with-asterisk))
           (end-of-line)      
-          (setq proc (get-buffer-process "*lldb*"))
+          (setq proc (lldb-get-buffer-process))
           (remove-hook 'comint-output-filter-functions 'lldb-callback t) ;; disable hook
           (setq str (lldb-run-thing-process proc (concat "expr -T -- *(" type addr")\n") t))
-          (add-hook 'comint-output-filter-functions 'lldb-callback) ;; and enable again
+	  (add-hook 'comint-output-filter-functions 'lldb-callback) ;; and enable again
           (setq result (lldb-extract-expr-result str))
           (save-excursion
             (insert-empty-line)
@@ -429,7 +496,7 @@
           (end-of-line)
           (setq prefix (lldb-current-prefix-with-asterisk))
           (end-of-line)      
-          (setq proc (get-buffer-process "*lldb*"))
+          (setq proc (lldb-get-buffer-process))
           (remove-hook 'comint-output-filter-functions 'lldb-callback t) ;; disable hook
           (setq str (concat "p/s " type addr "\n"))
           ;;(debug str)
@@ -462,7 +529,7 @@
     (if (= (length word) 0)
         (setq word (completing-read "Expression:" (list word) nil nil word))
       )
-    (setq proc (get-buffer-process "*lldb*"))
+    (setq proc (lldb-get-buffer-process))
     (remove-hook 'comint-output-filter-functions 'lldb-callback t) ;; disable hook
     (setq str (lldb-run-thing-process proc (concat "expr -T -- " word "\n") t))
     (add-hook 'comint-output-filter-functions 'lldb-callback) ;; and enable again
@@ -512,6 +579,11 @@
 
 (defun lldb-attach (working-directory pid)
   (interactive (list nil nil))
+  (if (string-equal system-type "windows-nt")
+      (setq lldb-is-win t)
+    ;; else
+    (setq lldb-is-win nil)
+    )
   (if (null working-directory)
       (setq working-directory default-directory)
     )
@@ -539,6 +611,8 @@
     (global-set-key (kbd "<f10>") 'lldb-eval-variable)
     ;; set full path config in llvm
     (comint-send-string nil "settings set frame-format frame #${frame.index}: { ${module.file.basename}{`${function.name-with-args}{${frame.no-debug}${function.pc-offset}}}}{ at ${line.file.fullpath}:${line.number}}{${function.is-optimized} [opt]}\\n\n")
+    ;; dynamic types in lldb
+    (comint-send-string nil "settings set target.prefer-dynamic-value run-target\n")
     (comint-send-string nil (concat "process attach --pid " pid "\n"))
     ;; read breakpoints
     (with-current-buffer (find-file-noselect "~/.breakpoints")
@@ -554,6 +628,11 @@
 
 (defun lldb-run (working-directory executable arguments)
   (interactive (list nil nil nil))
+  (if (string-equal system-type "windows-nt")
+      (setq lldb-is-win t)
+    ;; else
+    (setq lldb-is-win nil)
+    )
   (if (null working-directory)
       (setq working-directory default-directory)
     )
@@ -585,6 +664,8 @@
     (global-set-key (kbd "<f10>") 'lldb-eval-variable)
     ;; set full path config in llvm
     (comint-send-string nil "settings set frame-format frame #${frame.index}: { ${module.file.basename}{`${function.name-with-args}{${frame.no-debug}${function.pc-offset}}}}{ at ${line.file.fullpath}:${line.number}}{${function.is-optimized} [opt]}\\n\n")
+    ;; dynamic types in lldb
+    (comint-send-string nil "settings set target.prefer-dynamic-value run-target\n")
     (comint-send-string nil (concat "file " executable "\n"))
     ;; read breakpoints
     (with-current-buffer (find-file-noselect "~/.breakpoints")
@@ -636,11 +717,11 @@
             (setq line-num (match-string-no-properties 2))
             )
         )
-      (setq buf (get-buffer "*lldb*"))
+      (setq buf (lldb-get-buffer))
       ;; delete breakpoint immediately if *lldb* buffer is open 
       (if (and buf file-name)
           (progn
-            (setq proc (get-buffer-process "*lldb*"))
+            (setq proc (lldb-get-buffer-process))
             (remove-hook 'comint-output-filter-functions 'lldb-callback t) ;; disable hook
             (setq str (lldb-run-thing-process proc "breakpoint list\n" nil))
             (if (string-match (concat "\\([0-9]*\\):[^']*'" file-name "', line = " line-num) str)
@@ -660,7 +741,7 @@
 (defun lldb-catch-throw ()
   (interactive)
   (let ((buf))
-    (setq buf (get-buffer "*lldb*"))
+    (setq buf (lldb-get-buffer))
     (if buf
         (with-current-buffer buf
           (comint-send-string nil "break set -E c++\n")
@@ -672,7 +753,7 @@
 (defun lldb-catch-catch ()
   (interactive)
   (let ((buf))
-    (setq buf (get-buffer "*lldb*"))
+    (setq buf (lldb-get-buffer))
     (if buf
         (with-current-buffer buf
           (comint-send-string nil "b __cxa_begin_catch\n") ;; b __cxa_throw - stop at throw
@@ -700,7 +781,7 @@
       (insert (format "\nb %s:%i" name line))
       (save-buffer)
       )
-    (setq buf (get-buffer "*lldb*"))
+    (setq buf (lldb-get-buffer))
     (if buf
         (with-current-buffer buf
           (comint-send-string nil (concat "b " name ":" (number-to-string line) "\n"))
