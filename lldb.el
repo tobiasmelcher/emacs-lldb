@@ -22,6 +22,12 @@
 (require 'loop)
 (require 'infix)
 
+(defun lldb-insert-empty-line ()
+  (move-end-of-line nil)
+  (open-line 1)
+  (next-line 1)
+  )
+
 (defun lldb-show-arrow ()
   "show debug line marker"
   (setq overlay-arrow-position (make-marker))
@@ -141,6 +147,15 @@
     )
   )
 
+(defun lldb-strip-text-properties (text)
+  (set-text-properties 0 (length text) nil text)
+  text
+  )
+
+(defsubst lldb-string-join (strings &optional separator)
+  (mapconcat #'identity strings separator)
+  )
+
 (defun lldb-show-variables ()
   "show variables via overlay for current two lines"
   (interactive)
@@ -154,7 +169,7 @@
         (setq symbols (list))
         (loop-while t
           (backward-word)
-          (setq word (strip-text-properties (thing-at-point 'symbol)))
+          (setq word (lldb-strip-text-properties (thing-at-point 'symbol)))
           (if (null (member word symbols))
               (push word symbols)
             )
@@ -163,7 +178,7 @@
             )
           )
         )
-      (setq word (concat "fr v -o " (string-join symbols " ") "\n"))
+      (setq word (concat "fr v -o " (lldb-string-join symbols " ") "\n"))
       )
     (remove-hook 'comint-output-filter-functions 'lldb-callback t) ;; disable hook
     (setq proc (lldb-get-buffer-process))
@@ -285,19 +300,27 @@
       ;; wait until result is available
       (loop-while t
         (accept-process-output process 1)
-	(if lldb-is-win
-	    (progn
-	      (goto-char start)
-	      ;; Skip past the command, if it was echoed; ; on windows we need to skip the command input
-	      (setq sub (buffer-substring-no-properties start (+ start (length command) (length "(lldb) "))))
-	      (if (string-equal sub (concat "(lldb) " command))
-		  (progn
-		    (forward-line)
-		    (setq start (point))
-		    )
-		)
-	      )
-	  )
+        (progn
+          (goto-char start)
+          ;; Skip past the command, if it was echoed
+          (setq sub (buffer-substring-no-properties start (+ start (length command))))
+          (if (string-equal sub command)
+              (progn
+                (forward-line)
+                (setq start (point))
+                )
+            ;;else
+            (progn
+              (setq sub (buffer-substring-no-properties start (+ start (length command) (length "(lldb) "))))
+              (if (string-equal sub (concat "(lldb) " command))
+                  (progn
+                    (forward-line)
+                    (setq start (point))
+                    )
+                )
+              )
+            )
+          )
         (if (< (point-max) 7)
             (loop-continue)
           )
@@ -306,7 +329,7 @@
             (loop-break)
           )
 	;; windows workaround - lldb does not print marker in case of error
-	(if (string-equal last-chars "mmand.")
+	(if (and lldb-is-win (string-equal last-chars "mmand."))
 	    (progn
 	      (end-of-buffer)
 	      (backward-char)
@@ -437,7 +460,7 @@
           (add-hook 'comint-output-filter-functions 'lldb-callback) ;; and enable again
           (setq result (lldb-extract-expr-result str))
           (save-excursion
-            (insert-empty-line)
+            (lldb-insert-empty-line)
             (insert result)
             )
           (outline-hide-subtree)
@@ -469,7 +492,7 @@
 	  (add-hook 'comint-output-filter-functions 'lldb-callback) ;; and enable again
           (setq result (lldb-extract-expr-result str))
           (save-excursion
-            (insert-empty-line)
+            (lldb-insert-empty-line)
             (insert result)
             )
           (outline-hide-subtree)
@@ -511,7 +534,7 @@
                          )
                 )
           (save-excursion
-            (insert-empty-line)
+            (lldb-insert-empty-line)
             (insert result)
             )
           (beginning-of-line)
@@ -525,7 +548,7 @@
 (defun lldb-eval-variable ()
   (interactive)
   (let ((word) (proc) (str) (result))
-    (setq word (strip-text-properties (thing-at-point 'symbol)))
+    (setq word (lldb-strip-text-properties (thing-at-point 'symbol)))
     (if (= (length word) 0)
         (setq word (completing-read "Expression:" (list word) nil nil word))
       )
@@ -552,8 +575,8 @@
       ;;(debug lines)
       ;;(erase-buffer)
       (end-of-buffer) ;; jump to very end of buffer
-      (insert-empty-line)
-      (insert-empty-line)
+      (lldb-insert-empty-line)
+      (lldb-insert-empty-line)
       (save-excursion
         (insert result)
         )

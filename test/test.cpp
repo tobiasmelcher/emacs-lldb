@@ -35,6 +35,7 @@ void func(int param) {
   std::vector<int> vectorInts={0,1,2,3};
   Base* b = new Base();
   Base b2 = {};
+  Base* b3 = new Sub();
   Sub* sub = new Sub();
   sub->setMember(sub);
   Sub sub2 = {};
