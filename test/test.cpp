@@ -4,6 +4,8 @@
 #include <chrono>
 #include <thread>
 #include "unistd.h"
+#include <unordered_map>
+#include <memory>
 
 class Base {
 public:
@@ -39,9 +41,14 @@ void func(int param) {
   Sub* sub = new Sub();
   sub->setMember(sub);
   Sub sub2 = {};
-  // TODO map, set
+  //  map
+  std::unordered_map<int,Base*> map;
+  map.insert({1,new Sub()});
+  map.insert({2,new Base()});
+  // TODO set
   // TODO object ptr, object ref
-  // TODO unique ptr
+  // unique ptr
+  std::unique_ptr<Sub> unique_sub = std::make_unique<Sub>();
   std::cout << str << std::endl;
   std::cout << getpid() << std::endl;
   size_t i=0;
