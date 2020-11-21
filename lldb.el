@@ -13,11 +13,17 @@
 ;; lldb-continue
 ;; lldb-eval-variable - evaluate value and show result in an outline-mode list
 ;; lldb-backtrace - show backtrace
+;; variable output format changed to (template types removed): name = value (type)
 
 ;; TODO lldb improvements
 ;; show std::string more focused if no formatter is available
 ;; unique ptr - call get() to see the pointer value
-;; readme with screencasts
+;; add watch point at member attribute - stop debugger when value changes
+;; watchpoint set expression -- 0x123456
+;; # short form:
+;; w s e -- 0x123456
+;; variable refresh logic needed
+;; eval with input: type in expression and evaluate
 
 (require 'loop)
 (require 'infix)
@@ -111,7 +117,8 @@
                       (goto-line (string-to-number li))
                       (lldb-show-arrow)
                       (switch-to-buffer-other-window buf)
-                      (lldb-set-timer-show-variable-inline)
+                      ;; inline variable display is not working properly
+                      ;;(lldb-set-timer-show-variable-inline)
                       )
                   )
                 )
@@ -386,9 +393,11 @@
     )
   )
 
-(defun lldb-extract-expr-result (str)
+(defun lldb-extract-expr-result (str prefix)
   (with-temp-buffer
     (insert str)
+    (move-types-to-end-of-lines)
+    (remove-template-types)
     (goto-char 0) ;; jump to first position
     (replace-regexp "  " "*")
     (goto-char 0) ;; jump to first position
@@ -406,6 +415,10 @@
     )
   )
 
+(defun lldb-string-contains (string substr)
+  (string-index-of string substr)
+  )
+
 (defun lldb-variable-expand-2 ()
   (interactive)
   (let ((str) (line-str) (path)(current-type))
@@ -421,7 +434,7 @@
         (if (string-match "\\([$a-zA-Z0-9_]+\\) \\(=\\|$\\)" line-str)
             (progn
               (setq str (match-string 1 line-str))
-              (if (null (string-contains line-str (concat "(" str ")")))
+              (if (null (lldb-string-contains line-str (concat "(" str ")")))
                   (progn
                     (if (= (length path) 0)
                         (setq path str)
@@ -448,7 +461,7 @@
     (if (length path)
         (progn
           ;;  do we have a pointer or reference?
-          (if (string-contains current-type "*")
+          (if (lldb-string-contains current-type "*")
               (setq path (concat "*" path))
             )
           (end-of-line)
@@ -458,7 +471,7 @@
           (remove-hook 'comint-output-filter-functions 'lldb-callback t) ;; disable hook
           (setq str (lldb-run-thing-process proc (concat "expr -T -- " path "\n") t))
           (add-hook 'comint-output-filter-functions 'lldb-callback) ;; and enable again
-          (setq result (lldb-extract-expr-result str))
+          (setq result (lldb-extract-expr-result str prefix))
           (save-excursion
             (lldb-insert-empty-line)
             (insert result)
@@ -479,10 +492,10 @@
   (interactive)
   (let ((line-str) (prefix) (type) (addr) (str) (result))
     (setq line-str (thing-at-point 'line t))
-    (if (string-match "\\(([^)]*)\\)[^=]*= \\(.*\\)" line-str)
+    (if (string-match "[^=]*=[ ]*\\([xabcdef0-9]*\\)[ ]*\\(([^)]*)\\)" line-str)
         (progn
-          (setq type (match-string 1 line-str))
-          (setq addr  (match-string 2 line-str))
+          (setq type (match-string 2 line-str))
+          (setq addr  (match-string 1 line-str))
           (end-of-line)
           (setq prefix (lldb-current-prefix-with-asterisk))
           (end-of-line)      
@@ -490,7 +503,7 @@
           (remove-hook 'comint-output-filter-functions 'lldb-callback t) ;; disable hook
           (setq str (lldb-run-thing-process proc (concat "expr -T -- *(" type addr")\n") t))
 	  (add-hook 'comint-output-filter-functions 'lldb-callback) ;; and enable again
-          (setq result (lldb-extract-expr-result str))
+          (setq result (lldb-extract-expr-result str prefix))
           (save-excursion
             (lldb-insert-empty-line)
             (insert result)
@@ -545,6 +558,43 @@
     )
   )
 
+(defun move-types-to-end-of-lines ()
+  "find (...) and move substring to end of line"
+  (let ((start) (end) (sub))
+    (goto-char 0)
+    (loop-while (search-forward "(" nil t)
+      (backward-char)
+      (setq start (point))
+      (forward-sexp)
+      (setq end (point))
+      (end-of-line)
+      (if (not (eq (point) end))
+          (progn
+            (setq sub (buffer-substring-no-properties start end))
+            (delete-region start end)
+            (insert " ")
+            (insert sub)
+            )
+          )
+      )
+    )
+  )
+
+(defun remove-template-types ()
+  (c++-mode) ;; enable cpp mode
+  (goto-char 0)
+  (let ((start) (end))
+    (loop-while (search-forward "<" nil t)
+      (backward-char)
+      (setq start (point))
+      (forward-sexp)
+      (setq end (point))
+      (delete-region start end)
+      )
+    )
+  (c++-mode) ;; disable cpp mode
+  )
+
 (defun lldb-eval-variable ()
   (interactive)
   (let ((word) (proc) (str) (result))
@@ -558,6 +608,8 @@
     (add-hook 'comint-output-filter-functions 'lldb-callback) ;; and enable again
     (setq result (with-temp-buffer
                    (insert str)
+                   (move-types-to-end-of-lines)
+                   (remove-template-types)
                    (goto-char 0) ;; jump to first position
                    (replace-regexp "  " "*")
                    (goto-char 0) ;; jump to first position
@@ -635,7 +687,7 @@
     ;; set full path config in llvm
     (comint-send-string nil "settings set frame-format frame #${frame.index}: { ${module.file.basename}{`${function.name-with-args}{${frame.no-debug}${function.pc-offset}}}}{ at ${line.file.fullpath}:${line.number}}{${function.is-optimized} [opt]}\\n\n")
     ;; dynamic types in lldb
-    (comint-send-string nil "settings set target.prefer-dynamic-value run-target\n")
+;;    (comint-send-string nil "settings set target.prefer-dynamic-value run-target\n")
     (comint-send-string nil (concat "process attach --pid " pid "\n"))
     ;; read breakpoints
     (with-current-buffer (find-file-noselect "~/.breakpoints")
@@ -673,6 +725,7 @@
       (setq arguments (read-string "Arguments:"))
       )
   (let ((default-directory working-directory) (word))
+    ;; TODO duplicate code from lldb-attach - refactor out
     (comint-run lldb-executable)
     ;; register lldb-callback only for local buffer
     (make-variable-buffer-local 'comint-output-filter-functions)
@@ -688,7 +741,7 @@
     ;; set full path config in llvm
     (comint-send-string nil "settings set frame-format frame #${frame.index}: { ${module.file.basename}{`${function.name-with-args}{${frame.no-debug}${function.pc-offset}}}}{ at ${line.file.fullpath}:${line.number}}{${function.is-optimized} [opt]}\\n\n")
     ;; dynamic types in lldb
-    (comint-send-string nil "settings set target.prefer-dynamic-value run-target\n")
+;;    (comint-send-string nil "settings set target.prefer-dynamic-value run-target\n")
     (comint-send-string nil (concat "file " executable "\n"))
     ;; read breakpoints
     (with-current-buffer (find-file-noselect "~/.breakpoints")
